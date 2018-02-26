@@ -3,6 +3,8 @@ const urlTools = require('urltools');
 const swPrecache = require('sw-precache');
 const commonPathPrefix = require('common-path-prefix');
 const Promise = require('bluebird');
+const AssetGraph = require('assetgraph');
+const query = AssetGraph.query;
 
 module.exports = (queryObj, options) => {
   options = options || {};
@@ -16,18 +18,16 @@ module.exports = (queryObj, options) => {
         assetGraph.eachAssetPostOrder(
           htmlAsset,
           {
-            type: {
-              $nin: [
-                'HtmlAnchor',
-                'SvgAnchor',
-                'HtmlMetaRefresh',
-                'HtmlCacheManifest',
-                'HtmlConditionalComment',
-                'JavaScriptSourceUrl',
-                'JavaScriptSourceMappingUrl',
-                'JavaScriptSourceMap'
-              ]
-            }
+            type: query.not([
+              'HtmlAnchor',
+              'SvgAnchor',
+              'HtmlMetaRefresh',
+              'HtmlCacheManifest',
+              'HtmlConditionalComment',
+              'JavaScriptSourceUrl',
+              'JavaScriptSourceMappingUrl',
+              'JavaScriptSourceMap'
+            ])
           },
           asset => {
             // But only if the asset isn't inline, has been loaded, and isn't already in the manifest:
@@ -72,18 +72,15 @@ module.exports = (queryObj, options) => {
             ' -- giving up'
         );
       }
-      let serviceWorkerStr = await Promise.fromNode(cb =>
-        swPrecache.generate(
-          {
-            dynamicUrlToDependencies: textOrRawSrcByUrl,
-            logger(message) {
-              assetGraph.info(
-                serviceWorkerUrl.replace(/^.*\//, '') + ': ' + message
-              );
-            }
-          },
-          cb
-        )
+      let serviceWorkerStr = await swPrecache.generate(
+        {
+          dynamicUrlToDependencies: textOrRawSrcByUrl,
+          logger(message) {
+            assetGraph.emit('info',
+              serviceWorkerUrl.replace(/^.*\//, '') + ': ' + message
+            );
+          }
+        }
       );
       // Turn the string literal urls in the generated service worker scripts into JavaScriptStaticUrl:
       serviceWorkerStr = serviceWorkerStr.replace(
@@ -106,36 +103,31 @@ module.exports = (queryObj, options) => {
           );
         }
       );
-      assetGraph.addAsset({
-        type: 'JavaScript',
+      assetGraph.addAsset(new AssetGraph.JavaScript({
         url: serviceWorkerUrl,
         text: serviceWorkerStr
-      });
+      }));
       for (const htmlAsset of entryPointHtmlAssets) {
-        htmlAsset.addRelation(
-          {
-            type: 'HtmlScript',
-            hrefType: 'inline',
-            to: {
-              type: 'JavaScript',
-              text:
-                "if ('serviceWorker' in navigator) {\n" +
-                "    window.addEventListener('load', function () {\n" +
-                "        navigator.serviceWorker.register('" +
-                urlTools
-                  .buildRootRelativeUrl(
-                    assetGraph.root,
-                    serviceWorkerUrl,
-                    assetGraph.root
-                  )
-                  .replace(/'/g, "\\'") +
-                "');\n" +
-                '    });\n' +
-                '}\n'
-            }
-          },
-          'lastInBody'
-        );
+        const workerScript = new AssetGraph.JavaScript({
+          text:
+            "if ('serviceWorker' in navigator) {\n" +
+            "    window.addEventListener('load', function () {\n" +
+            "        navigator.serviceWorker.register('" +
+            urlTools
+              .buildRootRelativeUrl(
+                assetGraph.root,
+                serviceWorkerUrl,
+                assetGraph.root
+              )
+              .replace(/'/g, "\\'") +
+            "');\n" +
+            '    });\n' +
+            '}\n'
+        });
+        assetGraph.addAsset(workerScript);
+        new AssetGraph.HtmlScript({
+          to: workerScript
+        }).attach(htmlAsset, 'first').inline();
       }
     }
 
